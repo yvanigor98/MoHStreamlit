@@ -1,0 +1,16 @@
+[server]
+port = 8501
+address = "0.0.0.0"        # allow LAN access
+headless = true
+enableCORS = false         # useful behind reverse proxies
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"
+primaryColor = "#22d3ee"
+backgroundColor = "#0b1220"
+secondaryBackgroundColor = "#121a2b"
+textColor = "#e6f6ff"

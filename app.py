@@ -11,9 +11,10 @@ import streamlit as st
 # Config & Paths
 # --------------------------------
 st.set_page_config(page_title="Malaria Insights — OPD Cases", page_icon="🦟", layout="wide")
-DATA = Path("data")
+ROOT = Path(__file__).parent
+DATA = ROOT / "data"
 DATA.mkdir(exist_ok=True)
-GEOJSON_PATH = DATA / "/home/igor-ivan/MoHCase/rwadmin2.geojson"
+GEOJSON_PATH = DATA / "rwanda_adm2.geojson"
 
 # --------------------------------
 # Helpers
@@ -103,8 +104,8 @@ def filter_year_month(df: pd.DataFrame, year_sel, month_sel):
 # --------------------------------
 # Load Data (CSV only, relative paths)
 # --------------------------------
-OPD_CSV = DATA / "/home/igor-ivan/MoHCase/malaria_cases_opd_final.csv"
-COMM_CSV = DATA / "/home/igor-ivan/MoHCase/malaria_community_final.csv"
+OPD_CSV      = DATA / "opd.csv"
+COMM_CSV     = DATA / "community.csv"  # optional
 
 opd = load_csv(OPD_CSV)
 community = load_csv(COMM_CSV)

@@ -1,257 +1,231 @@
-# app.py — Malaria Insights (Fixed Version)
-import json
-from pathlib import Path
-from typing import List, Optional
-
-import pandas as pd
-import plotly.express as px
 import streamlit as st
+import pandas as pd
+import geopandas as gpd
+import plotly.express as px
+from pathlib import Path
 
-# --------------------------------
-# Config & Paths
-# --------------------------------
-st.set_page_config(page_title="Malaria Insights — OPD Cases", page_icon="🦟", layout="wide")
+
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 DATA.mkdir(exist_ok=True)
-GEOJSON_PATH = DATA / "rwanda_adm2.geojson"
 
-# --------------------------------
-# Helpers
-# --------------------------------
-@st.cache_data(show_spinner=False)
-def load_csv(path: Path) -> pd.DataFrame:
-    if path.exists() and path.suffix.lower() == ".csv":
-        return pd.read_csv(path)
-    return pd.DataFrame()
+# --- Page Configuration ---
+st.set_page_config(
+    page_title="Rwanda Malaria Dashboard",
+    page_icon="🇷🇼",
+    layout="wide",
+)
 
-@st.cache_data(show_spinner=False)
-def load_geojson(path: Path) -> Optional[dict]:
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return None
+# --- Data Loading ---
+@st.cache_data
+def load_all_data():
+    """Loads, preprocesses, and merges all datasets."""
+    # --- Helper Function for Preprocessing ---
+    def preprocess_df(df_raw, source_name):
+        # Standardize date columns
+        df_raw['date'] = pd.to_datetime(df_raw['year'].astype(str) + '-' + df_raw['month'], format='%Y-%B')
+        df_raw['source'] = source_name
+        return df_raw
 
-def first_col(df: pd.DataFrame, names: List[str]) -> Optional[str]:
-    for n in names:
-        if n in df.columns:
-            return n
-    return None
+    # --- Load Datasets ---
+    try:
+        df_opd = preprocess_df(pd.read_csv(DATA / 'malaria_cases_opd_final(in).csv'), 'OPD')
+        df_chw = preprocess_df(pd.read_csv(DATA / 'malaria_community_final.csv'), 'CHWs')
+        df_fever = preprocess_df(pd.read_csv(DATA / 'fever_cases_opd_final.csv'), 'Fever Cases')
+    except FileNotFoundError as e:
+        st.error(f"Error: A data file could not be found. Please check file names. Missing file: {e.filename}")
+        return None, None
 
-MONTH_LABELS = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}
-
-def month_to_num(m):
-    if pd.isna(m):
-        return None
-    if isinstance(m, (int, float)) and not pd.isna(m):
-        return int(m)
-    s = str(m).strip()
-    if s.isdigit():
-        return int(s)
-    mnames = {
-        'jan':1,'january':1,'feb':2,'february':2,'mar':3,'march':3,'apr':4,'april':4,
-        'may':5,'jun':6,'june':6,'jul':7,'july':7,'aug':8,'august':8,'sep':9,'sept':9,'september':9,
-        'oct':10,'october':10,'nov':11,'november':11,'dec':12,'december':12
+    # --- Load Geographic Data ---
+    try:
+        gdf_districts = gpd.read_file(DATA / 'geoBoundaries-RWA-ADM2.geojson')
+    except Exception as e:
+        st.error(f"Error loading GeoJSON file: {e}")
+        return None, None
+        
+    datasets = {
+        "OPD Cases": df_opd,
+        "CHW Cases": df_chw,
+        "Fever Cases": df_fever,
     }
-    return mnames.get(s.lower())
+    
+    return datasets, gdf_districts
 
-def infer_year_month(df: pd.DataFrame):
-    if df.empty:
-        return [], []
-    ycol = first_col(df, ["year", "Year", "YEAR"]) 
-    mcol = first_col(df, ["month", "Month", "MONTH"]) 
-    years, months = [], []
-    if ycol:
-        years = sorted(pd.to_numeric(df[ycol], errors="coerce").dropna().astype(int).unique().tolist())
-    if mcol:
-        months = sorted({month_to_num(v) for v in df[mcol].dropna().unique().tolist() if month_to_num(v)})
-    if not years or not months:
-        dcol = first_col(df, ["date", "Date", "period", "Period", "report_date", "month_date"]) 
-        if dcol:
-            dt = pd.to_datetime(df[dcol], errors="coerce", infer_datetime_format=True)
-            if not years:
-                years = sorted(dt.dt.year.dropna().astype(int).unique().tolist())
-            if not months:
-                months = sorted(dt.dt.month.dropna().astype(int).unique().tolist())
-    return years, months
+# --- Load all data ---
+datasets, gdf_districts = load_all_data()
 
-def filter_year_month(df: pd.DataFrame, year_sel, month_sel):
-    if df.empty:
-        return df
-    res = df.copy()
-    ycol = first_col(res, ["year", "Year", "YEAR"]) 
-    mcol = first_col(res, ["month", "Month", "MONTH"]) 
-    dcol = first_col(res, ["date", "Date", "period", "Period", "report_date", "month_date"]) 
+if not datasets or gdf_districts is None:
+    st.stop() # Stop execution if data loading failed
 
-    if year_sel not in (None, "(All)"):
-        yv = int(year_sel)
-        if ycol is not None:
-            res = res[pd.to_numeric(res[ycol], errors="coerce").astype("Int64") == yv]
-        elif dcol is not None:
-            dt = pd.to_datetime(res[dcol], errors="coerce", infer_datetime_format=True)
-            res = res[dt.dt.year == yv]
 
-    if month_sel not in (None, "(All)"):
-        mv = {v: k for k, v in MONTH_LABELS.items()}.get(month_sel, month_to_num(month_sel))
-        if mv:
-            if mcol is not None:
-                res = res[res[mcol].apply(month_to_num) == int(mv)]
-            elif dcol is not None:
-                dt = pd.to_datetime(res[dcol], errors="coerce", infer_datetime_format=True)
-                res = res[dt.dt.month == int(mv)]
+# =======================
+# Sidebar and Filters
+# =======================
+st.sidebar.title("Dashboard Controls")
 
-    return res
+# --- Dataset Selector ---
+selected_dataset_name = st.sidebar.selectbox(
+    "Select a Dataset to View",
+    options=list(datasets.keys())
+)
 
-# --------------------------------
-# Load Data (CSV only, relative paths)
-# --------------------------------
-OPD_CSV      = DATA / "opd.csv"
-COMM_CSV     = DATA / "community.csv"  # optional
+# --- Get the selected dataframe ---
+df = datasets[selected_dataset_name].copy()
 
-opd = load_csv(OPD_CSV)
-community = load_csv(COMM_CSV)
+st.sidebar.markdown("---")
+st.sidebar.header("Data Filters")
 
-datasets = {k: v for k, v in {"OPD": opd, "Community": community}.items() if not v.empty}
-if not datasets:
-    datasets = {"(empty)": pd.DataFrame()}
+# --- Dynamic Filters based on selected dataset ---
+# -- District Filter --
+district_list = ['All Districts'] + sorted(df['district_clean'].unique())
+selected_district = st.sidebar.selectbox("Select District", options=district_list)
 
-# --------------------------------
-# Sidebar — Filters with unique keys
-# --------------------------------
-st.sidebar.header("Filters")
-sel_dataset = st.sidebar.selectbox("Dataset", list(datasets.keys()), key="dataset_selector")
-df0 = datasets[sel_dataset].copy()
+# -- Year Filter --
+year_list = ['All Years'] + sorted(df['year'].unique(), reverse=True)
+selected_year = st.sidebar.selectbox("Select Year", options=year_list)
 
-# resolve key columns
-DIST_COL = first_col(df0, ["district_clean", "district", "adm2_name"])
-SECT_COL = first_col(df0, ["sector", "sector_name"])
-MEAS_COL = first_col(df0, ["Total", "total", "cases", "value"])
+# -- Dynamic Month Filter --
+month_order = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+if selected_year and selected_year != 'All Years':
+    months_in_year = sorted(df[df['year'] == selected_year]['month'].unique(), key=lambda m: month_order.index(m))
+    available_months = ['All Months'] + months_in_year
+else:
+    # Use all unique months present in the data, sorted chronologically
+    all_months_in_data = sorted(df['month'].unique(), key=lambda m: month_order.index(m))
+    available_months = ['All Months'] + all_months_in_data
+selected_month = st.sidebar.selectbox("Select Month", options=available_months)
 
-# year/month
-years, months = infer_year_month(df0)
-year_sel = st.sidebar.selectbox("Year", ["(All)"] + [str(y) for y in years] if years else ["(All)"], key="year_selector")
-month_sel = st.sidebar.selectbox("Month", ["(All)"] + [MONTH_LABELS[m] for m in months] if months else ["(All)"], key="month_selector")
 
-# district filter
-district_opts = sorted(df0[DIST_COL].dropna().astype(str).unique()) if DIST_COL else []
-sel_districts = st.sidebar.multiselect("District(s)", district_opts, key="district_selector")
+# =======================
+# Main Page Layout
+# =======================
+st.title(f"{selected_dataset_name} Analysis")
+st.markdown("Use the filters on the left to analyze the data for a specific area or time period.")
+st.markdown("---")
 
-# Apply filters
-df = filter_year_month(df0, year_sel, month_sel)
-if DIST_COL and sel_districts:
-    df = df[df[DIST_COL].astype(str).isin(sel_districts)]
+# --- IMPORTANT: Define column names ---
+# Adjust these if your column names differ between datasets
+VALUE_COL = 'Total'
+AGE_COL = 'age_category_new'
+GENDER_COL = 'gender'
 
-# --------------------------------
-# KPIs
-# --------------------------------
-st.title("Malaria Insights — OPD Cases")
+# --- Filter Data based on selections ---
+if selected_district != 'All Districts':
+    df = df[df['district_clean'] == selected_district]
+if selected_year != 'All Years':
+    df = df[df['year'] == selected_year]
+if selected_month != 'All Months':
+    df = df[df['month'] == selected_month]
 
-mcol = MEAS_COL
-dcol = DIST_COL
-scol = SECT_COL
+# Check if the main value column exists
+if VALUE_COL not in df.columns:
+    st.error(f"The selected dataset does not contain the required value column: '{VALUE_COL}'. Please check the data or column name definitions in the script.")
+    st.stop()
+    
+# =======================
+# Display KPI Section
+# =======================
+# Calculate KPIs
+total_cases = df[VALUE_COL].sum()
+active_districts = df[df[VALUE_COL] > 0]['district_clean'].nunique()
 
-total_cases = int(df[mcol].sum()) if (mcol and not df.empty) else 0
+# Top district
+top_district_row = (
+    df.groupby('district_clean')[VALUE_COL]
+    .sum()
+    .reset_index()
+    .sort_values(VALUE_COL, ascending=False)
+    .head(1)
+)
+top_district = top_district_row['district_clean'].iloc[0] if not top_district_row.empty else "N/A"
 
-active_districts = 0
-top_d_name, top_d_val = "—", 0
-if dcol and mcol and not df.empty:
-    ddf = (
-        df.groupby(dcol, dropna=False)[mcol]
-          .sum()
-          .reset_index()
-          .rename(columns={dcol: "district", mcol: "Total"})
+# Top sector
+if 'sector' in df.columns:
+    top_sector_row = (
+        df.groupby('sector')[VALUE_COL]
+        .sum()
+        .reset_index()
+        .sort_values(VALUE_COL, ascending=False)
+        .head(1)
     )
-    active_districts = int((ddf["Total"] > 0).sum())
-    if not ddf.empty:
-        row = ddf.sort_values("Total", ascending=False).iloc[0]
-        top_d_name, top_d_val = str(row["district"]), int(row["Total"])
+    top_sector = top_sector_row['sector'].iloc[0] if not top_sector_row.empty else "N/A"
+else:
+    top_sector = "N/A"
 
-top_s_name, top_s_val = "—", 0
-if scol and mcol and not df.empty:
-    sdf = (
-        df.groupby(scol, dropna=False)[mcol]
-          .sum()
-          .reset_index()
-          .rename(columns={scol: "sector", mcol: "Total"})
-    )
-    if not sdf.empty:
-        row = sdf.sort_values("Total", ascending=False).iloc[0]
-        top_s_name, top_s_val = str(row["sector"]), int(row["Total"]) 
-
-c1, c2, c3, c4 = st.columns(4)
-with c1: st.metric("Total cases", f"{total_cases:,}")
-with c2: st.metric("Active districts", f"{active_districts:,}")
-with c3: st.metric("Top district", top_d_name, help=(f"{top_d_val:,} cases" if top_d_val else None))
-with c4: st.metric("Top sector", top_s_name, help=(f"{top_s_val:,} cases" if top_s_val else None))
+# Display KPIs in columns
+kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+kpi1.metric(label="Total cases", value=f"{total_cases:,.0f}")
+kpi2.metric(label="Active districts", value=active_districts)
+kpi3.metric(label="Top district", value=top_district)
+kpi4.metric(label="Top sector", value=top_sector)
 
 st.markdown("---")
 
-# --------------------------------
-# Map
-# --------------------------------
-st.subheader("Rwanda District Map")
-geojson = load_geojson(GEOJSON_PATH)
-if dcol and mcol and geojson is not None and not df.empty:
-    d_agg = (
-        df.groupby(dcol, dropna=False)[mcol]
-          .sum()
-          .reset_index()
-          .rename(columns={dcol: "district", mcol: "Total"})
+
+# --- Layout for Charts ---
+col1, col2 = st.columns(2)
+
+with col1:
+    # --- MAP CHART (CHOROPLETH) ---
+    st.subheader("Total Cases by District")
+    district_cases = df.groupby('district_clean')[VALUE_COL].sum().reset_index()
+    merged_gdf = gdf_districts.merge(district_cases, left_on='shapeName', right_on='district_clean', how='left').fillna(0)
+    map_fig = px.choropleth_mapbox(merged_gdf, geojson=merged_gdf.geometry, locations=merged_gdf.index, color=VALUE_COL,
+                                 hover_name="shapeName", hover_data={VALUE_COL: ":,.0f"}, color_continuous_scale="Blues",
+                                 mapbox_style="carto-positron", zoom=7.3, center={"lat": -1.94, "lon": 29.87}, opacity=0.7,
+                                 labels={VALUE_COL: 'Total Cases'})
+    map_fig.update_layout(margin={"r":0, "t":0, "l":0, "b":0})
+    st.plotly_chart(map_fig, use_container_width=True)
+
+with col2:
+    # --- LINE CHART (Monthly Trend) ---
+    st.subheader("Monthly Cases Trend")
+    line_df = df.groupby('date')[VALUE_COL].sum().reset_index().sort_values('date')
+    line_fig = px.line(line_df, x='date', y=VALUE_COL, title="Monthly Trend", markers=True)
+    line_fig.update_layout(xaxis_title='Month-Year', yaxis_title='Total Cases')
+    st.plotly_chart(line_fig, use_container_width=True)
+
+# =======================
+# Top Sectors Chart
+# =======================
+if 'sector' in df.columns:
+    st.subheader("Top Sectors by Cases")
+    top_sectors_df = (
+        df.groupby('sector')[VALUE_COL]
+        .sum()
+        .reset_index()
+        .sort_values(VALUE_COL, ascending=False)
+        .head(10)  # Top 10 sectors
     )
-    fig_map = px.choropleth_mapbox(
-        d_agg,
-        geojson=geojson,
-        locations="district",
-        featureidkey="properties.shapeName",
-        color="Total",
-        mapbox_style="carto-positron",
-        zoom=6.5,
-        center={"lat": -1.94, "lon": 29.87},
-        opacity=0.75,
-        height=640,
+    top_sector_fig = px.bar(
+        top_sectors_df,
+        x='sector',
+        y=VALUE_COL,
+        title="Top Sectors by Total Cases",
+        labels={'sector': 'Sector', VALUE_COL: 'Total Cases'},
     )
-    fig_map.update_layout(margin=dict(l=0, r=0, t=30, b=0))
-    st.plotly_chart(fig_map, use_container_width=True)
-else:
-    st.info("To show the map, add data/rwanda_adm2.geojson and ensure your dataset has a district and a Total column.")
+    st.plotly_chart(top_sector_fig, use_container_width=True)
 
-# --------------------------------
-# Charts: Top Districts & Top Sectors
-# --------------------------------
-left, right = st.columns(2)
 
-with left:
-    st.markdown("### Top Districts")
-    if dcol and mcol and not df.empty:
-        ddf = (
-            df.groupby(dcol, dropna=False)[mcol]
-              .sum()
-              .reset_index()
-              .rename(columns={dcol: "district", mcol: "Total"})
-        )
-        ddf = ddf.sort_values("Total", ascending=False).head(15)
-        fig_d = px.bar(ddf.sort_values("Total"), x="Total", y="district", orientation="h", height=520)
-        fig_d.update_layout(margin=dict(l=20, r=20, t=40, b=20), uniformtext_minsize=8, uniformtext_mode='hide')
-        st.plotly_chart(fig_d, use_container_width=True)
+# --- Second row of charts (conditionally displayed) ---
+st.markdown("---")
+st.subheader("Demographic Breakdown")
+col3, col4 = st.columns(2)
+
+with col3:
+    # --- BAR CHART (Age) ---
+    if AGE_COL in df.columns:
+        bar_df = df.groupby(AGE_COL)[VALUE_COL].sum().reset_index()
+        bar_fig = px.bar(bar_df, x=AGE_COL, y=VALUE_COL, title="Cases by Age Group", labels={AGE_COL: 'Age Group', VALUE_COL: 'Total Cases'})
+        st.plotly_chart(bar_fig, use_container_width=True)
     else:
-        st.info("No district column found.")
+        st.info(f"Age breakdown analysis is not available for the '{selected_dataset_name}' dataset.")
 
-with right:
-    st.markdown("### Top Sectors")
-    if scol and mcol and not df.empty:
-        sdf = (
-            df.groupby(scol, dropna=False)[mcol]
-              .sum()
-              .reset_index()
-              .rename(columns={scol: "sector", mcol: "Total"})
-        )
-        sdf = sdf.sort_values("Total", ascending=False).head(30)
-        fig_s = px.bar(sdf, x="sector", y="Total", height=520)
-        fig_s.update_layout(margin=dict(l=20, r=20, t=40, b=80))
-        st.plotly_chart(fig_s, use_container_width=True)
+with col4:
+    # --- PIE CHART (Gender) ---
+    if GENDER_COL in df.columns:
+        pie_df = df.groupby(GENDER_COL)[VALUE_COL].sum().reset_index()
+        pie_fig = px.pie(pie_df, names=GENDER_COL, values=VALUE_COL, title="Cases by Gender", hole=0.3)
+        st.plotly_chart(pie_fig, use_container_width=True)
     else:
-        st.info("No sector column found.")
-
-# --------------------------------
-# Footer
-# --------------------------------
-st.caption("CSV-only version. Place opd.csv/community.csv in ./data and rwanda_adm2.geojson for the map.")
+        st.info(f"Gender breakdown analysis is not available for the '{selected_dataset_name}' dataset.")
